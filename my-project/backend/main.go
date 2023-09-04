@@ -1,19 +1,22 @@
 package main
 
 import (
+	"database/sql"
+	"fmt"
 	"log"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	_ "github.com/go-sql-driver/mysql"
 )
 
-type Employee struct {
-	ID         int     `json:"id"`
-	Name       string  `json:"name"`
-	Age        int     `json:"age"`
-	Salary     float64 `json:"salary"`
-	Department string  `json:"department"`
-	Tel        string  `json:"tel"`
+type Ledger struct {
+	ID       int     `json:"id"`
+	Status   string  `json:"status"`
+	Detail   string  `json:"detail"`
+	Amount   float64 `json:"amount"`
+	DateTime string  `json:"dateTime"`
 }
 
 func getValueFromParams(params string, contentType string) any {
@@ -34,8 +37,20 @@ func getValueFromParams(params string, contentType string) any {
 	return nil
 }
 
-func findIndexWithId(id int, arr []Employee) int {
-	for i, element := range arr {
+func findIndexWithId(id int) int {
+	recordList := &[]Ledger{}
+	outputs := execute("SELECT * FROM `ledger`")
+	for outputs.Next() {
+		record := Ledger{}
+		err := outputs.Scan(&record.ID, &record.Status, &record.Detail, &record.Amount, &record.DateTime)
+		if err != nil {
+			panic(err)
+		}
+		*recordList = append(*recordList, record)
+	}
+	outputs.Close()
+
+	for i, element := range *recordList {
 		if element.ID == id {
 			return i
 		}
@@ -43,84 +58,170 @@ func findIndexWithId(id int, arr []Employee) int {
 	return -1
 }
 
-func removeWithIndex(arr []Employee, index int) []Employee {
-	newArr := make([]Employee, 0)
-	newArr = append(newArr, arr[:index]...)
-	return append(newArr, arr[index+1:]...)
+func getID() int {
+	recordList := &[]Ledger{}
+	outputs := execute("SELECT * FROM `ledger`")
+	for outputs.Next() {
+		record := Ledger{}
+		err := outputs.Scan(&record.ID, &record.Status, &record.Detail, &record.Amount, &record.DateTime)
+		if err != nil {
+			panic(err)
+		}
+		*recordList = append(*recordList, record)
+	}
+	outputs.Close()
+
+	if len(*recordList) <= 0 {
+		return 1
+	} else {
+		id := 1
+		isFound := true
+		for isFound {
+			isFound = false
+			for _, val := range *recordList {
+				if val.ID == id {
+					isFound = true
+					id = id + 1
+					break
+				}
+			}
+		}
+		return id
+	}
+}
+
+func getRecord(c *gin.Context) {
+	recordList := &[]Ledger{}
+	outputs := execute("SELECT * FROM `ledger`")
+	if err := c.ShouldBind(&Ledger{}); err != nil {
+		log.Fatal(err)
+	}
+	for outputs.Next() {
+		record := Ledger{}
+		err := outputs.Scan(&record.ID, &record.Status, &record.Detail, &record.Amount, &record.DateTime)
+		if err != nil {
+			panic(err)
+		}
+		*recordList = append(*recordList, record)
+	}
+	outputs.Close()
+	c.JSON(200, recordList)
+}
+
+func concatString(stringSet []string) string {
+	outputString := stringSet[0]
+	if len(stringSet) > 1 {
+		for i, val := range stringSet {
+			if i > 0 {
+				outputString = outputString + "," + val
+			}
+		}
+	}
+	return outputString
+}
+
+func addRecord(c *gin.Context) {
+	var led Ledger
+
+	curruentTime := fmt.Sprint(time.Now().Format("02/Jan/2006,15:04:05"))
+
+	status := c.DefaultQuery("status", "Unknown")
+	detail := c.DefaultQuery("detail", "0")
+	amount, _ := strconv.ParseFloat(c.DefaultQuery("amount", "0.00"), 64)
+
+	if err := c.ShouldBind(&led); err != nil {
+		log.Fatal(err)
+	}
+	led = Ledger{ID: getID(), Status: status, Detail: detail, Amount: amount, DateTime: curruentTime}
+	query, err := db.Prepare("INSERT INTO `ledger` (id,status,detail,amount,dateTime) VALUES (?,?,?,?,?)")
+	if err != nil {
+		panic(err)
+	}
+
+	query.Exec(led.ID, led.Status, led.Detail, led.Amount, led.DateTime)
+	c.JSON(200, "Successfully adding")
+}
+
+func updateRecord(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	status := getValueFromParams(c.DefaultQuery("status", ""), "string")
+	detail := getValueFromParams(c.DefaultQuery("detail", ""), "string")
+	amount := getValueFromParams(c.DefaultQuery("amount", ""), "float")
+	params := []string{}
+
+	if status != "" && status != nil {
+		params = append(params, fmt.Sprintf("status = '%v'", status.(string)))
+		fmt.Println(params)
+		// LedgerList[i].Status = status.(string)
+	}
+	if detail != "" && detail != nil {
+		params = append(params, fmt.Sprintf("detail = '%v'", detail.(string)))
+		fmt.Println(params)
+		// LedgerList[i].Detail = detail.(string)
+	}
+	if amount != "" && amount != nil {
+		params = append(params, fmt.Sprintf("amount = %v", amount.(float64)))
+		fmt.Println(params)
+		// LedgerList[i].Amount = amount.(float64)
+	}
+
+	fmt.Print(params)
+	qString := fmt.Sprintf("UPDATE ledger SET %s WHERE id=%v", concatString(params), id)
+	fmt.Print(qString)
+	outputs := execute(qString)
+	outputs.Close()
+	c.JSON(200, "Successfully updating")
+}
+
+func deleteRecord(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+
+	if index := findIndexWithId(id); index != -1 {
+		outputs, err := db.Query(fmt.Sprintf("DELETE FROM ledger WHERE id=%v", id))
+		if err != nil {
+			panic(err)
+		}
+		outputs.Close()
+		c.JSON(200, "Successfully Deleting")
+	} else {
+		c.JSON(200, "ID Not found.")
+	}
+}
+
+var db *sql.DB
+var dbErr error
+
+func databaseConnect() {
+	db, dbErr = sql.Open("mysql", "root@tcp(localhost:3306)/mikdb")
+
+	if dbErr != nil {
+		fmt.Println("error while valid")
+		panic(dbErr)
+	}
+}
+
+func execute(query string) *sql.Rows {
+	output, err := db.Query(query)
+	if err != nil {
+		panic(err)
+	}
+
+	return output
 }
 
 func main() {
+
 	r := gin.Default()
-	empList := []Employee{}
 
-	r.GET("/get", func(c *gin.Context) {
-		var emp Employee
+	databaseConnect()
 
-		if err := c.ShouldBind(&emp); err != nil {
-			log.Fatal(err)
-		}
-		c.JSON(200, empList)
-	})
+	r.GET("/get", getRecord)
 
-	r.POST("/add", func(c *gin.Context) {
-		var emp Employee
+	r.POST("/add", addRecord)
 
-		name := getValueFromParams(c.DefaultQuery("name", "Unknown"), "string")
-		age, _ := strconv.Atoi(c.DefaultQuery("age", "0"))
-		salary, _ := strconv.ParseFloat(c.DefaultQuery("salary", "0.00"), 64)
-		department := c.DefaultQuery("department", "Unknown")
-		tel := c.DefaultQuery("tel", "099-000-0000")
+	r.PATCH("/update/:id/", updateRecord)
 
-		if err := c.ShouldBind(&emp); err != nil {
-			log.Fatal(err)
-		}
-
-		emp = Employee{ID: len(empList) + 1, Name: name.(string), Age: age, Salary: salary, Department: department, Tel: tel}
-		empList = append(empList, emp)
-		c.JSON(200, empList)
-	})
-
-	r.PATCH("/update/:id/", func(c *gin.Context) {
-		id, _ := strconv.Atoi(c.Param("id"))
-		name := getValueFromParams(c.DefaultQuery("name", ""), "string")
-		age := getValueFromParams(c.DefaultQuery("age", ""), "int")
-		salary := getValueFromParams(c.DefaultQuery("salary", ""), "float")
-		department := getValueFromParams(c.DefaultQuery("department", ""), "string")
-		tel := getValueFromParams(c.DefaultQuery("tel", ""), "string")
-
-		for i, element := range empList {
-			if element.ID == id {
-				if name != "" {
-					empList[i].Name = name.(string)
-				}
-				if age != "" {
-					empList[i].Age = age.(int)
-				}
-				if salary != "" {
-					empList[i].Salary = salary.(float64)
-				}
-				if department != "" {
-					empList[i].Department = department.(string)
-				}
-				if tel != "" {
-					empList[i].Tel = tel.(string)
-				}
-				break
-			}
-		}
-		c.JSON(200, empList)
-	})
-
-	r.DELETE("/remove/:id", func(c *gin.Context) {
-		id, _ := strconv.Atoi(c.Param("id"))
-
-		if index := findIndexWithId(id, empList); index != -1 {
-			empList = removeWithIndex(empList, index)
-			c.JSON(200, empList)
-		} else {
-			c.JSON(200, "ID Not found.")
-		}
-	})
+	r.DELETE("/remove/:id", deleteRecord)
 
 	r.Run(":8000")
 }
