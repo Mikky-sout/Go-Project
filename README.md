@@ -1,3 +1,3 @@
 # Practice project
-Backend : Golang + MySql\n
+Backend : Golang + MySql<br />
 Frontend : React (Coming soon)
